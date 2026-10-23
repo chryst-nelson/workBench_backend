@@ -249,7 +249,7 @@ describe("reviewing", () => {
   it("lets admins review unassigned submissions", async () => {
     const s = await setup();
     const sub = await s.submit(0);
-    const rr = await s.review(s.admin.h, sub.id, { decision: "approved" }); console.log("DBG", JSON.stringify(rr.body)); expect(rr.status).toBe(201);
+    expect((await s.review(s.admin.h, sub.id, { decision: "approved" })).status).toBe(201);
   });
 
   it("completes the enrollment once every task is approved", async () => {

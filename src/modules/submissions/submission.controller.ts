@@ -61,6 +61,6 @@ export async function get(req: Request, res: Response) {
 
 export async function review(req: Request, res: Response) {
   const { params, body } = getValidated<{ params: { submissionId: string }; body: ReviewInput }>(res);
-  const result = await reviewSubmission({ ...req.user!, ip: req.ip }, params.submissionId, body);
+  const result = await reviewSubmission(req.user!, params.submissionId, body, req.ip);
   sendSuccess(res, { submission: toSubmission(result.submission, toReview(result.review)) }, { status: 201 });
 }

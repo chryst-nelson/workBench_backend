@@ -29,13 +29,13 @@ export const swaggerSpec = {
   openapi: "3.0.3",
   info: {
     title: "p-learning API",
-    version: "0.4.0",
+    version: "0.5.0",
     description:
       "Backend API for a mentor-reviewed programming learning platform.\n\n" +
       "Auth: short-lived Bearer access token + rotating refresh token in an httpOnly cookie (`refreshToken`, path `/api/v1/auth`).",
   },
   servers: [{ url: "/api/v1" }],
-  tags: [{ name: "Health" }, { name: "Auth" }, { name: "Users" }, { name: "Admin" }, { name: "Content" }, { name: "Learning" }],
+  tags: [{ name: "Health" }, { name: "Auth" }, { name: "Users" }, { name: "Admin" }, { name: "Content" }, { name: "Learning" }, { name: "Reviews" }],
   components: {
     securitySchemes: { bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "JWT" } },
     schemas: {
@@ -178,7 +178,27 @@ export const swaggerSpec = {
           explanation: { type: "string", nullable: true },
           notes: { type: "string", nullable: true },
           status: { type: "string", enum: ["pending_review", "approved", "revision_requested"] },
+          review: { ...ref("Review"), nullable: true },
           submittedAt: { type: "string", format: "date-time" },
+        },
+      },
+      Review: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          decision: { type: "string", enum: ["approved", "revision_requested"] },
+          feedback: { type: "string", nullable: true },
+          reviewer: { type: "string" },
+          reviewedAt: { type: "string", format: "date-time" },
+        },
+      },
+      ReviewInput: {
+        type: "object",
+        required: ["decision"],
+        description: "`feedback` is optional when approving and required (min 10 characters) when requesting revisions.",
+        properties: {
+          decision: { type: "string", enum: ["approved", "revision_requested"] },
+          feedback: { type: "string", maxLength: 5000 },
         },
       },
       SubmissionInput: {
@@ -433,12 +453,48 @@ export const swaggerSpec = {
     },
 
     "/enrollments": {
+      get: {
+        tags: ["Reviews"],
+        summary: "All enrollments (admin). Use `unassigned=true` to find learners without a mentor.",
+        security: secured,
+        parameters: [
+          { name: "trackId", in: "query", schema: { type: "string" } },
+          { name: "mentorId", in: "query", schema: { type: "string" } },
+          { name: "unassigned", in: "query", schema: { type: "string", enum: ["true", "false"] } },
+          { name: "status", in: "query", schema: { type: "string", enum: ["active", "completed"] } },
+          { name: "page", in: "query", schema: { type: "integer" } },
+          { name: "limit", in: "query", schema: { type: "integer" } },
+        ],
+        responses: { "200": { description: "Paginated enrollments with `learnerDetails`, `mentorDetails`, `trackDetails`, `pendingReviews`" } },
+      },
       post: {
         tags: ["Learning"],
         summary: "Enroll in a published track (learner). Only the first task is unlocked.",
         security: secured,
         requestBody: body({ type: "object", required: ["trackId"], properties: { trackId: { type: "string" } } }),
         responses: { ...ok("Enrolled", { type: "object", properties: { enrollment: ref("Enrollment") } }, "201"), "404": err("Track not found / unpublished"), "409": err("ALREADY_ENROLLED") },
+      },
+    },
+    "/enrollments/assigned": {
+      get: {
+        tags: ["Reviews"],
+        summary: "Learners assigned to me (mentor), with `pendingReviews` per enrollment",
+        security: secured,
+        parameters: [
+          { name: "page", in: "query", schema: { type: "integer", default: 1 } },
+          { name: "limit", in: "query", schema: { type: "integer", default: 20, maximum: 100 } },
+        ],
+        responses: { "200": { description: "Paginated enrollments with `learnerDetails`, `trackDetails`, `pendingReviews`" } },
+      },
+    },
+    "/enrollments/{enrollmentId}/mentor": {
+      patch: {
+        tags: ["Reviews"],
+        summary: "Assign or clear the mentor for an enrollment (admin). `mentorId: null` clears it.",
+        security: secured,
+        parameters: [{ ...idParam, name: "enrollmentId" }],
+        requestBody: body({ type: "object", required: ["mentorId"], properties: { mentorId: { type: "string", nullable: true } } }),
+        responses: { ...ok("Updated", { type: "object", properties: { enrollment: ref("Enrollment") } }), "400": err("INVALID_MENTOR (not an active mentor)"), "404": err("Enrollment not found") },
       },
     },
     "/enrollments/me": {
@@ -493,10 +549,39 @@ export const swaggerSpec = {
     "/submissions/{submissionId}": {
       get: {
         tags: ["Learning"],
-        summary: "A submission with every attempt for the same task (owner or admin)",
+        summary: "A submission with every attempt for the same task, each with its review (owner, admin, or the assigned mentor; mentors and admins also get `learner` with profile)",
         security: secured,
         parameters: [{ ...idParam, name: "submissionId" }],
         responses: { "200": { description: "`submission` and `history` (attempt 1..n)" }, "404": err("Not found / not yours") },
+      },
+    },
+    "/submissions/{submissionId}/review": {
+      post: {
+        tags: ["Reviews"],
+        summary: "Approve or request changes (assigned mentor or admin). Approval unlocks the learner's next task.",
+        security: secured,
+        parameters: [{ ...idParam, name: "submissionId" }],
+        requestBody: body(ref("ReviewInput")),
+        responses: {
+          ...ok("Reviewed", { type: "object", properties: { submission: ref("Submission") } }, "201"),
+          "400": err("Validation error (feedback required for revision_requested)"),
+          "404": err("Not found / not assigned to you"),
+          "409": err("ALREADY_REVIEWED"),
+        },
+      },
+    },
+    "/reviews/queue": {
+      get: {
+        tags: ["Reviews"],
+        summary: "Submissions to review (mentor: assigned learners only; admin: all). Oldest first when pending.",
+        security: secured,
+        parameters: [
+          { name: "status", in: "query", schema: { type: "string", enum: ["pending_review", "approved", "revision_requested"], default: "pending_review" } },
+          { name: "trackId", in: "query", schema: { type: "string" } },
+          { name: "page", in: "query", schema: { type: "integer" } },
+          { name: "limit", in: "query", schema: { type: "integer" } },
+        ],
+        responses: { "200": { description: "Paginated items: `submission` (with `review`), `learner`, `task`, `track`" } },
       },
     },
     "/submissions/{submissionId}/resubmit": {

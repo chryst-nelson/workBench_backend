@@ -37,11 +37,7 @@ async function completeEnrollmentIfDone(enrollmentId: Id, learnerId: Id, trackId
   }
 }
 
-export async function reviewSubmission(
-  reviewer: Viewer & { ip?: string },
-  submissionId: string,
-  input: ReviewInput
-) {
+export async function reviewSubmission(reviewer: Viewer, submissionId: string, input: ReviewInput, ip?: string) {
   const submission = await Submission.findById(submissionId);
   if (!submission) throw new NotFoundError("Submission not found");
   await assertCanAccess(reviewer, submission.enrollment);
@@ -80,7 +76,7 @@ export async function reviewSubmission(
     targetType: "Submission",
     targetId: submission._id,
     metadata: { learner: String(submission.learner), task: String(submission.task), attempt: submission.attempt },
-    ip: reviewer.ip,
+    ip,
   });
 
   const updated = await Submission.findById(submission._id);
